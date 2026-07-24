@@ -29,9 +29,32 @@ async fn main() {
 
     let client = reqwest::Client::new();
 
+    // 读取 AGENTS.md 作为跨会话记忆
+    let agents_md_path = "AGENTS.md";
+    let agents_memory = std::fs::read_to_string(agents_md_path).unwrap_or_default();
+
+    let system_content = if agents_memory.is_empty() {
+        "你是一个有用的 AI 助手。用中文简洁、友好地回复用户。\n\n\
+        你有一个持久记忆文件 AGENTS.md（位于项目根目录）。\
+        当用户要求你记住某些信息时，使用 write_file 工具将内容追加写入 AGENTS.md。\
+        每次会话启动时，AGENTS.md 的内容会自动加载到你的记忆中。".to_string()
+    } else {
+        format!(
+            "你是一个有用的 AI 助手。用中文简洁、友好地回复用户。\n\n\
+            你有一个持久记忆文件 AGENTS.md（位于项目根目录）。\
+            当用户要求你记住某些信息时，使用 write_file 工具将内容追加写入 AGENTS.md。\n\n\
+            === 你的跨会话记忆（AGENTS.md）===\n{}\n=== 记忆结束 ===",
+            agents_memory
+        )
+    };
+
+    if !agents_memory.is_empty() {
+        println!("\x1b[2m  📝 已加载 AGENTS.md 记忆 ({} 字符)\x1b[0m", agents_memory.len());
+    }
+
     let mut messages: Messages = vec![json!({
         "role": "system",
-        "content": "你是一个有用的 AI 助手。用中文简洁、友好地回复用户。"
+        "content": system_content,
     })];
 
     let mut rl = DefaultEditor::new().expect("无法初始化 readline");
