@@ -12,6 +12,8 @@ const MAX_TURNS: usize = 30;
 const MAX_MESSAGES: usize = 50;
 /// 每次裁剪的目标条数
 const TRIM_COUNT: usize = 20;
+/// 工具连续失败上限，超过则强制停止
+const MAX_CONSECUTIVE_FAILURES: usize = 3;
 
 /// 裁剪对话历史：保留 system prompt + 最近消息，按轮次边界裁剪
 fn trim_messages(messages: &mut Messages) {
@@ -195,6 +197,7 @@ pub async fn run_agent_loop(
     messages: &mut Messages,
 ) -> Result<String, String> {
     let tool_defs = tools::get_tool_definitions();
+    let mut consecutive_failures: usize = 0;
 
     for turn in 0..MAX_TURNS {
         // 发送前检查消息数，超限则裁剪
@@ -215,6 +218,8 @@ pub async fn run_agent_loop(
                     "content": null,
                     "tool_calls": tool_calls,
                 }));
+
+                let mut has_failure = false;
 
                 // 逐个执行工具
                 for tool_call in &tool_calls {
@@ -237,14 +242,49 @@ pub async fn run_agent_loop(
                         tools::execute_tool(client, func_name, &args).await
                     };
 
-                    println!("\x1b[33m   ↳ 结果: {}\x1b[0m",
-                        if exec_result.len() > 200 { &exec_result[..200] } else { &exec_result });
+                    // 判断是否失败
+                    let is_error = exec_result.starts_with("[")
+                        && (exec_result.contains("失败")
+                            || exec_result.contains("错误")
+                            || exec_result.contains("拒绝")
+                            || exec_result.contains("未知工具"));
+
+                    if is_error {
+                        has_failure = true;
+                        println!("\x1b[31m   ✖ 失败: {}\x1b[0m",
+                            if exec_result.len() > 200 { &exec_result[..200] } else { &exec_result });
+                    } else {
+                        println!("\x1b[33m   ↳ 结果: {}\x1b[0m",
+                            if exec_result.len() > 200 { &exec_result[..200] } else { &exec_result });
+                    }
 
                     messages.push(json!({
                         "role": "tool",
                         "tool_call_id": call_id,
                         "content": exec_result,
                     }));
+                }
+
+                // 更新连续失败计数
+                if has_failure {
+                    consecutive_failures += 1;
+                    println!("\x1b[31m⚠️  工具连续失败 {}/{}\x1b[0m", consecutive_failures, MAX_CONSECUTIVE_FAILURES);
+
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        println!("\x1b[31m🚫 连续 {} 次工具调用失败，强制停止\x1b[0m", MAX_CONSECUTIVE_FAILURES);
+                        return Err(format!("工具连续失败 {} 次，已强制停止", MAX_CONSECUTIVE_FAILURES));
+                    }
+
+                    // 提示 LLM 分析原因并换策略重试
+                    messages.push(json!({
+                        "role": "user",
+                        "content": format!(
+                            "[系统提示] 工具调用失败（连续第 {} 次）。请分析失败原因，换一种策略重试。如果无法完成，请直接告知用户原因。",
+                            consecutive_failures
+                        ),
+                    }));
+                } else {
+                    consecutive_failures = 0; // 成功则重置计数
                 }
 
                 // 继续循环，让 LLM 根据工具结果生成回复
