@@ -1,5 +1,6 @@
 mod agent;
 mod config;
+mod tools;
 
 use agent::Messages;
 use rustyline::DefaultEditor;
