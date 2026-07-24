@@ -1,10 +1,26 @@
 use crate::config::AgentConfig;
 use crate::tools;
 use serde_json::{json, Value};
+use std::io::Write;
 
 pub type Messages = Vec<Value>;
 
 const MAX_TURNS: usize = 30;
+
+/// 危险工具列表，执行前需要用户确认
+const DANGEROUS_TOOLS: &[&str] = &["write_file", "run_shell"];
+
+/// 询问用户是否确认执行
+fn confirm_execution(tool_name: &str, args_str: &str) -> bool {
+    print!("\x1b[31m⚠️  危险操作: {}({})\x1b[0m", tool_name, args_str);
+    print!("\n\x1b[31m   确认执行？[y/N]: \x1b[0m");
+    std::io::stdout().flush().unwrap_or(());
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap_or(0);
+    let answer = input.trim().to_lowercase();
+    answer == "y" || answer == "yes"
+}
 
 pub async fn run_agent_loop(
     client: &reqwest::Client,
@@ -57,7 +73,17 @@ pub async fn run_agent_loop(
 
                 println!("\x1b[33m🔧 调用工具: {}({})\x1b[0m", func_name, args_str);
 
-                let result = tools::execute_tool(client, func_name, &args).await;
+                // 危险工具需要用户确认
+                let result = if DANGEROUS_TOOLS.contains(&func_name) {
+                    if confirm_execution(func_name, args_str) {
+                        tools::execute_tool(client, func_name, &args).await
+                    } else {
+                        println!("\x1b[31m   ✖ 用户拒绝执行\x1b[0m");
+                        format!("[用户拒绝了 {} 的执行]", func_name)
+                    }
+                } else {
+                    tools::execute_tool(client, func_name, &args).await
+                };
 
                 println!("\x1b[33m   ↳ 结果: {}\x1b[0m",
                     if result.len() > 200 { &result[..200] } else { &result });
