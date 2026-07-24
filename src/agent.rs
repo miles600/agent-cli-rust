@@ -233,13 +233,13 @@ pub async fn run_agent_loop(
                     // 危险工具需要用户确认
                     let exec_result = if DANGEROUS_TOOLS.contains(&func_name) {
                         if confirm_execution(func_name, args_str) {
-                            tools::execute_tool(client, func_name, &args).await
+                            tools::execute_tool(client, config, func_name, &args).await
                         } else {
                             println!("\x1b[31m   ✖ 用户拒绝执行\x1b[0m");
                             format!("[用户拒绝了 {} 的执行]", func_name)
                         }
                     } else {
-                        tools::execute_tool(client, func_name, &args).await
+                        tools::execute_tool(client, config, func_name, &args).await
                     };
 
                     // 判断是否失败

@@ -1,3 +1,4 @@
+use crate::config::AgentConfig;
 use serde_json::{json, Value};
 
 /// 返回所有工具的 JSON Schema 定义（OpenAI function calling 格式）
@@ -120,6 +121,27 @@ pub fn get_tool_definitions() -> Value {
                     "required": ["url"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delegate",
+                "description": "委派一个子 Agent 执行独立任务。子 Agent 拥有独立上下文，不会影响主对话记忆。适合委派独立的分析、总结、代码生成等任务。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "委派给子 Agent 的任务描述"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "提供给子 Agent 的背景信息（可选）"
+                        }
+                    },
+                    "required": ["task"]
+                }
+            }
         }
     ])
 }
@@ -127,6 +149,7 @@ pub fn get_tool_definitions() -> Value {
 /// 执行工具调用，返回结果字符串
 pub async fn execute_tool(
     client: &reqwest::Client,
+    config: &AgentConfig,
     name: &str,
     args: &Value,
 ) -> String {
@@ -138,6 +161,7 @@ pub async fn execute_tool(
         "write_file" => exec_write_file(args),
         "run_shell" => exec_shell(args),
         "fetch_webpage" => exec_fetch_webpage(client, args).await,
+        "delegate" => exec_delegate(client, config, args).await,
         _ => format!("未知工具: {}", name),
     }
 }
@@ -261,5 +285,73 @@ async fn exec_fetch_webpage(client: &reqwest::Client, args: &Value) -> String {
             }
         }
         Err(e) => format!("网页请求失败: {}", e),
+    }
+}
+
+async fn exec_delegate(client: &reqwest::Client, config: &AgentConfig, args: &Value) -> String {
+    let task = args["task"].as_str().unwrap_or("");
+    let context = args["context"].as_str().unwrap_or("");
+
+    if task.is_empty() {
+        return "[委派失败: 未提供任务描述]".to_string();
+    }
+
+    println!("\x1b[35m🤖 子 Agent 启动，任务: {}\x1b[0m",
+        if task.len() > 100 { &task[..100] } else { task });
+
+    // 构建独立上下文（不污染主 Agent 记忆）
+    let system_prompt = if context.is_empty() {
+        "你是一个专注执行任务的子 Agent。请简洁、准确地完成指定任务，直接输出结果。".to_string()
+    } else {
+        format!(
+            "你是一个专注执行任务的子 Agent。请简洁、准确地完成指定任务，直接输出结果。\n\n背景信息：\n{}",
+            context
+        )
+    };
+
+    let sub_messages = vec![
+        json!({ "role": "system", "content": system_prompt }),
+        json!({ "role": "user", "content": task }),
+    ];
+
+    let url = format!("{}/chat/completions", config.base_url);
+    let body = json!({
+        "model": config.model,
+        "messages": sub_messages,
+    });
+
+    let resp = match client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return format!("[子 Agent 请求失败: {}]", e),
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return format!("[子 Agent API 错误 {}: {}]", status, text);
+    }
+
+    let data: Value = match resp.json().await {
+        Ok(d) => d,
+        Err(e) => return format!("[子 Agent 解析响应失败: {}]", e),
+    };
+
+    let content = data["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    if content.is_empty() {
+        "[子 Agent 未返回内容]".to_string()
+    } else {
+        println!("\x1b[35m🤖 子 Agent 完成，返回 {} 字符\x1b[0m", content.len());
+        format!("[子 Agent 结果]\n{}", content)
     }
 }
