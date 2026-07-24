@@ -8,6 +8,44 @@ pub type Messages = Vec<Value>;
 
 const MAX_TURNS: usize = 30;
 
+/// 消息数上限，超过时自动裁剪
+const MAX_MESSAGES: usize = 50;
+/// 每次裁剪的目标条数
+const TRIM_COUNT: usize = 20;
+
+/// 裁剪对话历史：保留 system prompt + 最近消息，按轮次边界裁剪
+fn trim_messages(messages: &mut Messages) {
+    if messages.len() <= MAX_MESSAGES {
+        return;
+    }
+
+    let total = messages.len();
+    // 目标：从 messages[1] 开始裁掉约 TRIM_COUNT 条
+    let mut cut_end = 1 + TRIM_COUNT.min(total - 2); // 至少保留最后 1 条
+
+    // 按轮次边界调整：不要在 tool 消息中间切断
+    // 确保 cut_end 落在 "user" 消息的开头（一轮对话的起点）
+    while cut_end < total {
+        let role = messages[cut_end]["role"].as_str().unwrap_or("");
+        if role == "user" {
+            break; // 找到轮次边界
+        }
+        cut_end += 1; // 跳过 assistant/tool 消息，继续往后找
+    }
+
+    let trimmed_count = cut_end - 1; // 不含 system prompt
+    if trimmed_count == 0 {
+        return;
+    }
+
+    println!("\x1b[2m✂️  对话历史过长({} 条)，已裁剪 {} 条旧消息\x1b[0m", total, trimmed_count);
+
+    let system = messages[0].clone();
+    let recent: Vec<Value> = messages[cut_end..].to_vec();
+    *messages = vec![system];
+    messages.extend(recent);
+}
+
 /// 危险工具列表，执行前需要用户确认
 const DANGEROUS_TOOLS: &[&str] = &["write_file", "run_shell"];
 
@@ -159,6 +197,9 @@ pub async fn run_agent_loop(
     let tool_defs = tools::get_tool_definitions();
 
     for turn in 0..MAX_TURNS {
+        // 发送前检查消息数，超限则裁剪
+        trim_messages(messages);
+
         println!("\x1b[2m\n--- 循环 第 {} 轮 ---\x1b[0m", turn + 1);
         println!("\x1b[36m📡 发送请求到 LLM...\x1b[0m");
         print!("\x1b[34m🤖 \x1b[0m");
